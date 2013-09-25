@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script language="javascript" src="//ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+    <script language="javascript" src="lib.js"></script>
+    <script language="javascript" src="rts.js"></script>
+    <script language="javascript" src="lib1.js"></script>
+    <script language="javascript" src="out.js"></script>
+  </head>
+  <body>
+    <h2>Unify these:</h2>
+    <input type="text" id="expr1_input" />
+    <input type="text" id="expr2_input" />
+    <br/>
+    <canvas id="leftCanvas" width="220" height="220"></canvas>
+    <canvas id="rightCanvas" width="220" height="220"></canvas>
+    <h2>Result</h2>
+    <canvas id="unifiedCanvas" width="220" height="220"></canvas>
+    <h3>(debugging)</h3>
+    <div id="unified_output"></div>
+  </body>
+  <script language="javascript">
+
+h$main(h$mainZCMainzimain);
+
+$('#expr1_input, #expr2_input').on('keyup change', function(e) {
+  var o = {
+      expr1: $('#expr1_input').val(),
+      expr2: $('#expr2_input').val()
+  };
+
+  h$runSync( h$c2( h$ap1_e
+                 , h$mainZCMainzipageInteraction
+                 , h$c1(h$ghcjszmprimZCGHCJSziPrimziJSRef_con_e, o)
+                 )
+           , false
+           );
+
+  $('#unified_output').text(JSON.stringify(o.unified));
+});
+
+  </script>
+</html>
