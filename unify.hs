@@ -21,7 +21,7 @@ import JavaScript.JQuery (select)
 
 -- Note this is left associative
 tyExpr :: Parsec String () Ty
-tyExpr = foldl1' TyApp <$> (many (atomicTy <* spaces))
+tyExpr = foldl1' TyApp <$> (many1 (atomicTy <* spaces))
 
 -- | Unsophisticated type representation. This ignores at least two
 -- important things:
@@ -139,7 +139,17 @@ printUnification tys = mapM_ putStrLn
     , ""
     ]
 
--- TODO figure out why single variables don't cause a render
+renderDia' :: Context -> Diagram Canvas R2 -> IO ()
+renderDia' c = renderDia Canvas (CanvasOptions (Dims 200 200) c)
+
+drawTree :: BTree String -> Context -> IO ()
+drawTree tree ctx = do
+    clearRect 0 0 220 220 ctx
+    let d = uniqueXLayout 2 2 tree
+        node name = text name <> roundedRect 3 1.3 0.3 # fc white
+        tree' = pad 1.1 . lw 0.03 . centerXY <$> renderTree node (~~) <$> d
+    maybe (return ()) (renderDia' ctx) tree'
+
 pageInteraction :: JSRef () -> IO ()
 pageInteraction ref = do
     expr1 <- fromJSString <$> getProp ("expr1" :: Text) ref
@@ -148,28 +158,16 @@ pageInteraction ref = do
     case (parseExpr expr1, parseExpr expr2) of
         (Right ty1, Right ty2) -> do
             let getctx str = getContext =<< indexArray 0 . castRef =<< select str
-            leftCtx <- getctx "#leftCanvas"
-            rightCtx <- getctx "#rightCanvas"
-            unifiedCtx <- getctx "#unifiedCanvas"
+                unified = unify ty1 ty2
 
-            let drawTree tree ctx = do
-                clearRect 0 0 200 200 ctx
-                let d = uniqueXLayout 2 2 tree
-                    node name = text name <> roundedRect 3 1.3 0.3 # fc white
-                    tree' = pad 1.1 . lw 0.03 . centerXY <$> renderTree node (~~) <$> d
-                renderDia' ctx $ maybe (circle 1) id tree'
+            drawTree (tyToTree ty1)     =<< getctx "#leftCanvas"
+            drawTree (tyToTree ty2)     =<< getctx "#rightCanvas"
+            drawTree (unToTree unified) =<< getctx "#unifiedCanvas"
 
-            drawTree (tyToTree ty1) leftCtx
-            drawTree (tyToTree ty2) rightCtx
-            drawTree (unToTree (unify ty1 ty2)) unifiedCtx
-
-            u <- toJSRef $ unify ty1 ty2
-            setProp ("unified"::JSString) u ref
+            u <- toJSRef unified
+            setProp ("unified" :: JSString) u ref
 
         e -> print e
-
-renderDia' :: Context -> Diagram Canvas R2 -> IO ()
-renderDia' c = renderDia Canvas (CanvasOptions (Dims 200 200) c)
 
 main :: IO ()
 main = do
