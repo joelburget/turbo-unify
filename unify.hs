@@ -1,16 +1,34 @@
-{-# LANGUAGE OverloadedStrings, DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE ConstraintKinds #-}
 
 module Main where
 
 import Control.Applicative ((<$>), (*>), (<*))
+import Control.Arrow hiding ((|||))
 import Control.Monad (void)
+import Control.Monad.Error
+import Control.Monad.State
 import Data.Char (isLower, isUpper, isAlpha)
+import Data.Functor.Identity
 import Data.List (nub, foldl1')
+import Data.Map.Lazy hiding (map)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text, pack)
+import Data.Word (Word8)
 import GHC.Generics
+import Prelude hiding (lookup)
+import System.Random
 import Text.Parsec as P hiding (Empty)
 
-import Diagrams.Prelude hiding (font, moveTo, stroke)
+import Data.Colour.SRGB
+import Data.Tree (Tree)
+import Diagrams.Prelude hiding (moveTo, stroke)
 import Diagrams.Backend.GHCJS
 import Diagrams.TwoD.Layout.Tree
 import GHCJS.Types
@@ -21,7 +39,7 @@ import JavaScript.JQuery (select)
 
 -- Note this is left associative
 tyExpr :: Parsec String () Ty
-tyExpr = foldl1' TyApp <$> (many1 (atomicTy <* spaces))
+tyExpr = foldl1' TyApp <$> many1 (atomicTy <* spaces)
 
 -- | Unsophisticated type representation. This ignores at least two
 -- important things:
@@ -51,7 +69,6 @@ unToTree (VarEq t1 t2) = BNode (pprint t1 ++ " = " ++ pprint t2) Empty Empty
 unToTree (FailEq t1 t2) = BNode (pprint t1 ++ "=/=" ++ pprint t2) Empty Empty
 
 instance ToJSRef Ty where toJSRef = toJSRef_generic id
-
 instance ToJSRef Unifier where toJSRef = toJSRef_generic id
 
 -- ty := atomicTy *
@@ -118,7 +135,7 @@ sequenceBoth (Left e, _) = Left e
 sequenceBoth (_, Left e) = Left e
 
 testCases :: Either ParseError [(Ty, Ty)]
-testCases = sequence $ fmap sequenceBoth $ (fmap.mapBoth) parseExpr
+testCases = sequence $ fmap (sequenceBoth . mapBoth parseExpr)
     [ ("x", "y")
     , ("x", "Const")
     , ("Const x", "Const y")
@@ -135,20 +152,127 @@ printUnification :: (Ty, Ty) -> IO ()
 printUnification tys = mapM_ putStrLn
     [ pprint tys
     , "=>"
-    , pprint $ uncurry unify $ tys
+    , pprint $ uncurry unify tys
     , ""
     ]
 
-renderDia' :: Context -> Diagram Canvas R2 -> IO ()
+safeColors :: [Clr]
+safeColors = [
+      sRGB24read "#002A4A"
+    , sRGB24read "#17607D"
+    , sRGB24read "#FFF1CE"
+    , sRGB24read "#FF9311"
+    , sRGB24read "#E33200"
+    ]
+
+stripes :: Clr -> Clr -> Int -> Diag
+stripes c1 c2 stripes = let width = (1 / fromIntegral stripes) in
+    foldl1 (|||)
+        $ map (\clr -> rect width 1 # fc clr # lc clr)
+        $ take stripes
+        $ cycle [c1, c2]
+
+fills :: [Diag]
+fills = ([\clr -> square 1 # fc clr # lc clr] <*> safeColors)
+     <> ((\clr1 clr2 -> stripes clr1 clr2 10
+                # translate (r2 (-0.4, 0))
+                # rotateBy (3/8)
+                # scale 1.5
+                # clipBy (square 1))
+            <$> safeColors <*> safeColors)
+
+node :: Map String Diag -> String -> Diag
+node backgrounds name =
+    let bg = fromMaybe (square 1 # fc black) (lookup name backgrounds)
+		   # scale 3
+		   # clipBy (roundedRect 3 1.3 0.3)
+    in (text name # font "Droid Sans Mono" # fc white # scale 0.8) <> bg
+
+nameNodes :: BTree String -> TreeM StdGen ()
+nameNodes Empty = return ()
+nameNodes (BNode a t1 t2) = do
+    colorName a
+    nameNodes t1
+    nameNodes t2
+
+drawTree :: BTree String
+         -> Context
+         -> IO (Either String ((), StdGen, [Diag], Map String Diag))
+drawTree tree ctx = do
+    seed <- getStdGen
+    runTreeT' seed $ do
+        liftIO $ clearRect 0 0 220 220 ctx
+        let d = uniqueXLayout 2 2 tree
+            d' :: TreeM g (Tree (String, P2))
+            d' = (TreeT . lift . liftEither . mToE "couldn't lay out diagram") d
+        nameNodes tree :: TreeM StdGen ()
+        names <- (\(_, _, a) -> a) <$> get
+        tree' <- (pad 1.1 . lw 0.03 . centerXY . renderTree (node names) (~~))
+            <$> d'
+        liftIO $ renderDia' ctx tree'
+
+renderDia' :: Context -> Diag -> IO ()
 renderDia' c = renderDia Canvas (CanvasOptions (Dims 200 200) c)
 
-drawTree :: BTree String -> Context -> IO ()
-drawTree tree ctx = do
-    clearRect 0 0 220 220 ctx
-    let d = uniqueXLayout 2 2 tree
-        node name = text name <> roundedRect 3 1.3 0.3 # fc white
-        tree' = pad 1.1 . lw 0.03 . centerXY <$> renderTree node (~~) <$> d
-    maybe (return ()) (renderDia' ctx) tree'
+type Clr = Colour Double
+type Diag = Diagram Canvas R2
+
+-- TODO:
+-- * think of a set of primitives
+newtype TreeT g m a = TreeT {
+    unTreeT :: StateT (g, [Diag], Map String Diag) (ErrorT String m) a
+    } deriving (Functor, Applicative, Monad)
+deriving instance Monad m => MonadState (g, [Diagram Canvas R2], Map String Diag) (TreeT g m)
+deriving instance Monad m => MonadError String (TreeT g m)
+deriving instance MonadIO m => MonadIO (TreeT g m)
+-- Monadic language for describing trees
+type TreeM g a = TreeT g IO a
+-- Restricted version
+type RTreeM g a = TreeT g Identity a
+
+type MonadTree g m = (RandomGen g, Monad m, MonadState (g, [Diagram Canvas R2], Map String (Diagram Canvas R2)) m, MonadError String m)
+
+colorName :: MonadTree g m => String -> m ()
+colorName str = do
+    (rand, diags, nameColors) <- get
+    case diags of
+        [] -> throwError "Out of colors!"
+        diag':diags' -> put (rand, diags', insert str diag' nameColors)
+
+runTreeT' :: g
+          -> TreeM g a
+          -> IO (Either String (a, g, [Diagram Canvas R2], Map String Diag))
+runTreeT' = runTreeT
+
+runTreeT :: Functor m
+         => g
+         -> TreeT g m a
+         -> m (Either String (a, g, [Diagram Canvas R2], Map String Diag))
+runTreeT g m = (fmap.fmap) flatten
+    $ runErrorT
+    $ runStateT (unTreeT m) (g, fills, empty)
+
+flatten :: (a, (b, c, d)) -> (a, b, c, d)
+flatten (a, (b, c, d)) = (a, b, c, d)
+
+right :: (b -> c) -> Either a b -> Either a c
+right _ (Left a) = Left a
+right f (Right b) = Right (f b)
+
+liftEither :: Monad m => Either e a -> ErrorT e m a
+liftEither = ErrorT . return
+
+mToE :: String -> Maybe a -> Either String a
+mToE str = maybe (Left str) Right
+
+eToM :: Either String a -> Maybe a
+eToM = either (const Nothing) Just
+
+-- generate a color for each variable
+nextColor :: RandomGen g => g -> (Clr, g)
+nextColor gen = (sRGB24 r g b, newGen) where
+    (_, newGen) = next gen
+    r:g:b:_ = map fromIntegral (randomRs (0, 255) gen :: [Int])
 
 pageInteraction :: JSRef () -> IO ()
 pageInteraction ref = do
@@ -170,7 +294,6 @@ pageInteraction ref = do
         e -> print e
 
 main :: IO ()
-main = do
-    case testCases of
-        Left err -> print err
-        Right exprs -> mapM_ printUnification exprs
+main = case testCases of
+    Left err -> print err
+    Right exprs -> mapM_ printUnification exprs
